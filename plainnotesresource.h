@@ -1,16 +1,16 @@
 #ifndef PLAINNOTESRESOURCE_H
 #define PLAINNOTESRESOURCE_H
 
-#include <akonadi/resourcebase.h>
+#include <Akonadi/ResourceBase>
 
-class plainnotesResource : public Akonadi::ResourceBase,
+class PlainNotesResource : public Akonadi::ResourceBase,
                            public Akonadi::AgentBase::Observer
 {
   Q_OBJECT
 
   public:
-    plainnotesResource( const QString &id );
-    ~plainnotesResource();
+    PlainNotesResource( const QString &id );
+    ~PlainNotesResource();
 
   public Q_SLOTS:
     virtual void configure( WId windowId );
@@ -26,6 +26,8 @@ class plainnotesResource : public Akonadi::ResourceBase,
     virtual void itemAdded( const Akonadi::Item &item, const Akonadi::Collection &collection );
     virtual void itemChanged( const Akonadi::Item &item, const QSet<QByteArray> &parts );
     virtual void itemRemoved( const Akonadi::Item &item );
+    
+    QString directoryName() const;
 };
 
 #endif

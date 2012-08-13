@@ -7,7 +7,7 @@
 
 using namespace Akonadi;
 
-plainnotesResource::plainnotesResource( const QString &id )
+PlainNotesResource::PlainNotesResource( const QString &id )
   : ResourceBase( id )
 {
   new SettingsAdaptor( Settings::self() );
@@ -17,18 +17,18 @@ plainnotesResource::plainnotesResource( const QString &id )
   // TODO: you can put any resource specific initialization code here.
 }
 
-plainnotesResource::~plainnotesResource()
+PlainNotesResource::~PlainNotesResource()
 {
 }
 
-void plainnotesResource::retrieveCollections()
+void PlainNotesResource::retrieveCollections()
 {
   // TODO: this method is called when Akonadi wants to have all the
   // collections your resource provides.
   // Be sure to set the remote ID and the content MIME types
 }
 
-void plainnotesResource::retrieveItems( const Akonadi::Collection &collection )
+void PlainNotesResource::retrieveItems( const Akonadi::Collection &collection )
 {
   Q_UNUSED( collection );
 
@@ -39,7 +39,7 @@ void plainnotesResource::retrieveItems( const Akonadi::Collection &collection )
   // different ways to tell Akonadi when you are done.
 }
 
-bool plainnotesResource::retrieveItem( const Akonadi::Item &item, const QSet<QByteArray> &parts )
+bool PlainNotesResource::retrieveItem( const Akonadi::Item &item, const QSet<QByteArray> &parts )
 {
   Q_UNUSED( item );
   Q_UNUSED( parts );
@@ -51,13 +51,13 @@ bool plainnotesResource::retrieveItem( const Akonadi::Item &item, const QSet<QBy
   return true;
 }
 
-void plainnotesResource::aboutToQuit()
+void PlainNotesResource::aboutToQuit()
 {
   // TODO: any cleanup you need to do while there is still an active
   // event loop. The resource will terminate after this method returns
 }
 
-void plainnotesResource::configure( WId windowId )
+void PlainNotesResource::configure( WId windowId )
 {
   Q_UNUSED( windowId );
 
@@ -73,7 +73,7 @@ void plainnotesResource::configure( WId windowId )
   // the user canceled the dialog, configurationDialogRejected() has to be emitted.
 }
 
-void plainnotesResource::itemAdded( const Akonadi::Item &item, const Akonadi::Collection &collection )
+void PlainNotesResource::itemAdded( const Akonadi::Item &item, const Akonadi::Collection &collection )
 {
   Q_UNUSED( item );
   Q_UNUSED( collection );
@@ -85,7 +85,7 @@ void plainnotesResource::itemAdded( const Akonadi::Item &item, const Akonadi::Co
   // of this template code to keep it simple
 }
 
-void plainnotesResource::itemChanged( const Akonadi::Item &item, const QSet<QByteArray> &parts )
+void PlainNotesResource::itemChanged( const Akonadi::Item &item, const QSet<QByteArray> &parts )
 {
   Q_UNUSED( item );
   Q_UNUSED( parts );
@@ -97,7 +97,7 @@ void plainnotesResource::itemChanged( const Akonadi::Item &item, const QSet<QByt
   // of this template code to keep it simple
 }
 
-void plainnotesResource::itemRemoved( const Akonadi::Item &item )
+void PlainNotesResource::itemRemoved( const Akonadi::Item &item )
 {
   Q_UNUSED( item );
 
@@ -108,6 +108,10 @@ void plainnotesResource::itemRemoved( const Akonadi::Item &item )
   // of this template code to keep it simple
 }
 
-AKONADI_RESOURCE_MAIN( plainnotesResource )
+QString PlainNotesResource::directoryName() const {
+  return Settings::self()->path();
+}
+
+AKONADI_RESOURCE_MAIN( PlainNotesResource )
 
 #include "plainnotesresource.moc"
