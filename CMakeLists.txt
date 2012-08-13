@@ -47,18 +47,21 @@ set( CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${KDE4_ENABLE_EXCEPTIONS}" )
 
 set( plainnotesresource_SRCS
   plainnotesresource.cpp
+  settingsdialog.cpp
 )
 
-install( FILES plainnotesresource.desktop DESTINATION "${CMAKE_INSTALL_PREFIX}/share/akonadi/agents" )
-
+kde4_add_ui_files(plainnotesresource_SRCS settings.ui)
 kde4_add_kcfg_files(plainnotesresource_SRCS settings.kcfgc)
+
+# DBus API
 kcfg_generate_dbus_interface(${CMAKE_CURRENT_SOURCE_DIR}/plainnotesresource.kcfg org.kde.Akonadi.plainnotes.Settings)
-qt4_add_dbus_adaptor(plainnotesresource_SRCS
-  ${CMAKE_CURRENT_BINARY_DIR}/org.kde.Akonadi.plainnotes.Settings.xml settings.h Settings
-)
+qt4_add_dbus_adaptor(plainnotesresource_SRCS ${CMAKE_CURRENT_BINARY_DIR}/org.kde.Akonadi.plainnotes.Settings.xml settings.h PlainNotesResourceSettings settingsadaptor PlainNotesResourceSettingsAdaptor)
 
 kde4_add_executable(akonadi_plainnotes_resource RUN_UNINSTALLED ${plainnotesresource_SRCS})
 
-target_link_libraries(akonadi_plainnotes_resource ${KDE4_AKONADI_LIBS} ${QT_QTCORE_LIBRARY} ${QT_QTDBUS_LIBRARY} ${KDE4_KDECORE_LIBS})
+target_link_libraries(akonadi_plainnotes_resource ${KDE4_AKONADI_LIBS} ${QT_QTCORE_LIBRARY} ${QT_QTDBUS_LIBRARY} ${KDE4_KDECORE_LIBS} ${KDE4_KIO_LIBS} ${KDEPIMLIBS_KMIME_LIBS})
+
+## Installation
 
 install(TARGETS akonadi_plainnotes_resource ${INSTALL_TARGETS_DEFAULT_ARGS})
+install(FILES plainnotesresource.desktop DESTINATION "${CMAKE_INSTALL_PREFIX}/share/akonadi/agents")
