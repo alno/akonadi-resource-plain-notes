@@ -1,10 +1,10 @@
 [Desktop Entry]
-Name=
-Comment=
+Name=Plain Notes
+Comment=Plain notes storage in filesystem hierarchy
 Type=AkonadiResource
 Exec=akonadi_plainnotes_resource
-Icon=text-directory
+Icon=view-pim-notes
 
-X-Akonadi-MimeTypes=text/directory
+X-Akonadi-MimeTypes=text/directory,text/x-vnd.akonadi.note
 X-Akonadi-Capabilities=Resource
 X-Akonadi-Identifier=akonadi_plainnotes_resource

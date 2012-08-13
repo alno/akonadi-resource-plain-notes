@@ -33,21 +33,21 @@ SettingsDialog::SettingsDialog( PlainNotesResourceSettings *settings, WId window
 {
   if ( windowId )
     KWindowSystem::setMainWindow( this, windowId );
-  
+
   setButtons( Ok | Cancel );
   setCaption( i18n( "Select a plain notes folder" ) );
-  
-  ui.setupUi( mainWidget() );  
+
+  ui.setupUi( mainWidget() );
   ui.kcfg_Path->setMode( KFile::Directory | KFile::ExistingOnly );
   ui.kcfg_Path->setUrl( KUrl( mSettings->path() ) );
 
   connect( this, SIGNAL(okClicked()), SLOT(save()) );
   connect( ui.kcfg_Path, SIGNAL(textChanged(QString)), SLOT(validate()) );
   connect( ui.kcfg_ReadOnly, SIGNAL(toggled(bool)), SLOT(validate()) );
-    
+
   mManager = new KConfigDialogManager( this, mSettings );
   mManager->updateWidgets();
-  
+
   validate();
 }
 
@@ -58,25 +58,25 @@ void SettingsDialog::validate()
     enableButton( Ok, false );
     return;
   }
-  
+
   QFileInfo f( ui.kcfg_Path->url().toLocalFile() );
 
   if ( f.exists() && f.isDir() ) {
     ui.statusLabel->setText( i18n( "The selected path is a valid directory." ) );
-    
+
     if ( f.isWritable() ) {
       ui.kcfg_ReadOnly->setEnabled( true );
     } else {
       ui.kcfg_ReadOnly->setEnabled( false );
       ui.kcfg_ReadOnly->setChecked( true );
     }
-    
+
     enableButton( Ok, true );
   } else {
     ui.statusLabel->setText( i18n( "The selected path does not exist." ) );
-    
+
     enableButton( Ok, false );
-  }  
+  }
 }
 
 void SettingsDialog::save()

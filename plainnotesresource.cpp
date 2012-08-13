@@ -6,21 +6,35 @@
 
 #include <QtDBus/QDBusConnection>
 
+#include <Akonadi/ChangeRecorder>
+#include <Akonadi/ItemFetchScope>
+#include <Akonadi/CollectionFetchScope>
+
 #include <KLocale>
 #include <KMime/KMimeMessage>
+
+#define ENCODING "utf-8"
+#define X_NOTES_LASTMODIFIED_HEADER "X-Akonotes-LastModified"
 
 using namespace Akonadi;
 
 PlainNotesResource::PlainNotesResource( const QString &id )
   : ResourceBase( id ),
   mSettings( new PlainNotesResourceSettings() )
-{  
+{
   new PlainNotesResourceSettingsAdaptor( mSettings );
   QDBusConnection::sessionBus().registerObject( QLatin1String( "/Settings" ), mSettings, QDBusConnection::ExportAdaptors );
 
+  changeRecorder()->fetchCollection( true );
+  changeRecorder()->itemFetchScope().fetchFullPayload( true );
+  changeRecorder()->itemFetchScope().setAncestorRetrieval( ItemFetchScope::All ); // Retrieve all item ancestors for correct file name selection
+  changeRecorder()->collectionFetchScope().setAncestorRetrieval( CollectionFetchScope::All ); // Retrieve all collection ancestors for correct file name selection
+
+  setHierarchicalRemoteIdentifiersEnabled( true );
+
   mItemMimeType = QLatin1String( "text/x-vnd.akonadi.note" );
   mSupportedMimeTypes << Collection::mimeType() << mItemMimeType;
-  
+
   initializeDirectory( baseDirectoryPath() );
 }
 
@@ -49,6 +63,7 @@ void PlainNotesResource::retrieveCollections()
 void PlainNotesResource::retrieveItems( const Akonadi::Collection &collection )
 {
   QDir directory( directoryForCollection( collection ) );
+
   if ( !directory.exists() ) {
     cancelTask( i18n( "Directory '%1' does not exists", collection.remoteId() ) );
     return;
@@ -61,7 +76,7 @@ void PlainNotesResource::retrieveItems( const Akonadi::Collection &collection )
   const QFileInfoList entries = directory.entryInfoList();
 
   foreach ( const QFileInfo &entry, entries ) {
-    if ( entry.fileName() == "WARNING_README.txt" )
+    if ( entry.fileName().endsWith("~") )
       continue;
 
     Item item;
@@ -77,23 +92,30 @@ void PlainNotesResource::retrieveItems( const Akonadi::Collection &collection )
 bool PlainNotesResource::retrieveItem( const Akonadi::Item &item, const QSet<QByteArray> &parts )
 {
   Q_UNUSED( parts );
-  
+
   const QString filePath = directoryForCollection( item.parentCollection() ) + QDir::separator() + item.remoteId();
 
+  QFileInfo fi( filePath );
   QFile file( filePath );
+
   if ( !file.open( QIODevice::ReadOnly ) ) {
     cancelTask( i18n( "Unable to open file '%1'", filePath ) );
     return false;
   }
 
-  KMime::Message::Ptr msg( new KMime::Message() );  
-  msg->setHead( item.remoteId().toLocal8Bit() );
-  msg->setContent( file.readAll() );
+  KMime::Message * msg = new KMime::Message();
+  msg->subject( true )->fromUnicodeString( item.remoteId(), ENCODING );
+  msg->contentType( true )->setMimeType( "text/plain" );
+  msg->date( true )->setDateTime( KDateTime( fi.created() ) );
+  msg->mainBodyPart()->fromUnicodeString( QString::fromUtf8( file.readAll() ) );
+  msg->appendHeader( new KMime::Headers::Generic( X_NOTES_LASTMODIFIED_HEADER, msg, KDateTime( fi.lastModified() ).toString( KDateTime::RFCDateDay ).toLatin1(), ENCODING ) );
+  msg->assemble();
 
   file.close();
-    
+
   Item newItem( item );
-  newItem.setPayload( msg );
+  newItem.setMimeType( mItemMimeType );
+  newItem.setPayload( KMime::Message::Ptr( msg ) );
   itemRetrieved( newItem );
 
   return true;
@@ -107,7 +129,7 @@ void PlainNotesResource::aboutToQuit()
 void PlainNotesResource::configure( WId windowId )
 {
   SettingsDialog dlg( mSettings, windowId );
-  
+
   if ( dlg.exec() ) {
     mSettings->writeConfig();
 
@@ -116,9 +138,9 @@ void PlainNotesResource::configure( WId windowId )
 
     synchronize();
 
-    emit configurationDialogAccepted();
+    configurationDialogAccepted();
   } else {
-    emit configurationDialogRejected();
+    configurationDialogRejected();
   }
 }
 
@@ -131,7 +153,7 @@ void PlainNotesResource::itemChanged( const Akonadi::Item &item, const QSet<QByt
 {
   bool bodyChanged = false;
   bool headChanged = false;
-  
+
   foreach ( const QByteArray &part, parts )  {
     if ( part.startsWith( "PLD:RFC822" ) ) {
       bodyChanged = true;
@@ -140,51 +162,61 @@ void PlainNotesResource::itemChanged( const Akonadi::Item &item, const QSet<QByt
     }
   }
 
-  saveItem( item, item.parentCollection(), bodyChanged, headChanged );  
+  saveItem( item, item.parentCollection(), headChanged, bodyChanged );
 }
 
 void PlainNotesResource::saveItem( const Akonadi::Item &item, const Akonadi::Collection &parentCollection, bool saveHead, bool saveBody )
-{  
+{
   if ( !saveHead && !saveBody ) {
     changeProcessed();
     return;
   }
-  
+
   if ( mSettings->readOnly() ) {
     cancelTask( i18n( "Trying to write to a read-only file: '%1'", item.remoteId() ) );
     return;
   }
-  
+
   Item newItem( item );
-  
+
   if ( item.hasPayload<KMime::Message::Ptr>() ) { //something has changed that we can deal with
     const KMime::Message::Ptr mail = item.payload<KMime::Message::Ptr>();
-    
-    if ( saveHead ) {
-      const QString sourceFilePath = directoryForCollection( parentCollection ) + QDir::separator() + item.remoteId();      
-      const QString destinationFilePath = directoryForCollection( parentCollection ) + QDir::separator() + mail->head();
-      
-      QFile::rename(sourceFilePath, destinationFilePath);
-      
-      newItem.setRemoteId( mail->head() );
+
+    if ( saveHead || newItem.remoteId().isEmpty() ) { // We should set remote id if it's empty or should be saved
+      newItem.setRemoteId( mail->subject( true )->asUnicodeString() );
+
+      if ( newItem.remoteId().isEmpty() ) { // If id is empty after we set it
+        cancelTask( i18n( "Unable to set empty id from '%1'", newItem.remoteId() ) );
+        return;
+      }
     }
-    
+
+    if ( saveHead && !item.remoteId().isEmpty() && item.remoteId() != newItem.remoteId() ) { // We should rename old file it old id was not null
+      const QString sourceFilePath = directoryForCollection( parentCollection ) + QDir::separator() + item.remoteId();
+      const QString destinationFilePath = directoryForCollection( parentCollection ) + QDir::separator() + newItem.remoteId();
+
+      if ( QFile::exists( sourceFilePath ) && !QFile::rename(sourceFilePath, destinationFilePath) ) { // If file exists but can't be renamed - it's a problem
+        cancelTask( i18n( "Unable to rename file from '%1' to '%2'", sourceFilePath, destinationFilePath ) );
+        return;
+      }
+    }
+
     if ( saveBody ) {
-      const QString filePath = directoryForCollection( item.parentCollection() ) + QDir::separator() + item.remoteId();
+      const QString filePath = directoryForCollection( parentCollection ) + QDir::separator() + newItem.remoteId();
       QFile file( filePath );
-      
+
       if ( !file.open( QIODevice::WriteOnly ) ) {
         cancelTask( i18n( "Unable to write to file '%1': %2", filePath, file.errorString() ) );
         return;
       }
 
-      file.write( mail->decodedContent() );
+      file.write( mail->mainBodyPart()->decodedText( true, true ).toUtf8() );
       file.close();
     }
   } else {
     kWarning() << "got item without (usable) payload, ignoring it";
   }
-  
+
   changeCommitted( newItem );
 }
 
@@ -267,16 +299,17 @@ void PlainNotesResource::collectionChanged( const Akonadi::Collection &collectio
     return;
   }
 
-  const QString dirName = directoryForCollection( collection );
+  Collection newCollection( collection );
+  newCollection.setRemoteId( collection.name() );
 
-  QFileInfo oldDirectory( dirName );
-  if ( !QDir::root().rename( dirName, oldDirectory.absolutePath() + QDir::separator() + collection.name() ) ) {
-    cancelTask( i18n( "Unable to rename folder '%1'.", collection.name() ) );
+  const QString oldName = directoryForCollection( collection );
+  const QString newName = directoryForCollection( newCollection );
+
+  if ( !QFile::rename( oldName, newName ) ) {
+    cancelTask( i18n( "Unable to rename folder '%1' from '%2' to '%3'.", collection.name(), oldName, newName ) );
     return;
   }
 
-  Collection newCollection( collection );
-  newCollection.setRemoteId( collection.name() );
   changeCommitted( newCollection );
 }
 
@@ -337,19 +370,8 @@ void PlainNotesResource::initializeDirectory( const QString &path ) const
 {
   QDir dir( path );
 
-  // if folder does not exists, create it
   if ( !dir.exists() )
     QDir::root().mkpath( dir.absolutePath() );
-
-  // check whether warning file is in place...
-  QFile file( dir.absolutePath() + QDir::separator() + "WARNING_README.txt" );
-  if ( !file.exists() ) {
-    // ... if not, create it
-    file.open( QIODevice::WriteOnly );
-    file.write( "Important Warning!!!\n\n"
-                "Don't create or copy vCards inside this folder manually, they are managed by the Akonadi framework!\n" );
-    file.close();
-  }
 }
 
 Collection::Rights PlainNotesResource::supportedRights( bool isResourceCollection ) const
@@ -384,6 +406,7 @@ QString PlainNotesResource::directoryForCollection( const Collection& collection
   }
 
   const QString parentDirectory = directoryForCollection( collection.parentCollection() );
+
   if ( parentDirectory.isNull() ) // invalid, != isEmpty() here!
     return QString();
 
