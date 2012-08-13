@@ -76,7 +76,7 @@ void PlainNotesResource::retrieveItems( const Akonadi::Collection &collection )
   const QFileInfoList entries = directory.entryInfoList();
 
   foreach ( const QFileInfo &entry, entries ) {
-    if ( entry.fileName().endsWith("~") )
+    if ( entry.fileName().startsWith(".") || entry.fileName().endsWith("~") )
       continue;
 
     Item item;
@@ -97,6 +97,7 @@ bool PlainNotesResource::retrieveItem( const Akonadi::Item &item, const QSet<QBy
 
   QFileInfo fi( filePath );
   QFile file( filePath );
+  QTextStream stream( &file );
 
   if ( !file.open( QIODevice::ReadOnly ) ) {
     cancelTask( i18n( "Unable to open file '%1'", filePath ) );
@@ -106,8 +107,10 @@ bool PlainNotesResource::retrieveItem( const Akonadi::Item &item, const QSet<QBy
   KMime::Message * msg = new KMime::Message();
   msg->subject( true )->fromUnicodeString( item.remoteId(), ENCODING );
   msg->contentType( true )->setMimeType( "text/plain" );
+  msg->contentType( true )->setCharset( ENCODING );
   msg->date( true )->setDateTime( KDateTime( fi.created() ) );
-  msg->mainBodyPart()->fromUnicodeString( QString::fromUtf8( file.readAll() ) );
+  msg->mainBodyPart()->fromUnicodeString( stream.readAll() );
+  msg->mainBodyPart()->changeEncoding( KMime::Headers::CEquPr );
   msg->appendHeader( new KMime::Headers::Generic( X_NOTES_LASTMODIFIED_HEADER, msg, KDateTime( fi.lastModified() ).toString( KDateTime::RFCDateDay ).toLatin1(), ENCODING ) );
   msg->assemble();
 
@@ -204,13 +207,16 @@ void PlainNotesResource::saveItem( const Akonadi::Item &item, const Akonadi::Col
     if ( saveBody ) {
       const QString filePath = directoryForCollection( parentCollection ) + QDir::separator() + newItem.remoteId();
       QFile file( filePath );
+      QTextStream stream( &file );
 
       if ( !file.open( QIODevice::WriteOnly ) ) {
         cancelTask( i18n( "Unable to write to file '%1': %2", filePath, file.errorString() ) );
         return;
       }
 
-      file.write( mail->mainBodyPart()->decodedText( true, true ).toUtf8() );
+      stream << mail->mainBodyPart()->decodedText( true, true );
+      stream.flush();
+
       file.close();
     }
   } else {
