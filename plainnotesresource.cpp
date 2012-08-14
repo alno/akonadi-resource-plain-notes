@@ -8,9 +8,13 @@
 
 #include <Akonadi/ChangeRecorder>
 #include <Akonadi/ItemFetchScope>
+#include <Akonadi/ItemFetchJob>
+#include <Akonadi/ItemModifyJob>
 #include <Akonadi/CollectionFetchScope>
+#include <Akonadi/CollectionFetchJob>
 
 #include <KLocale>
+#include <KDirWatch>
 #include <KMime/KMimeMessage>
 
 #define ENCODING "utf-8"
@@ -20,7 +24,8 @@ using namespace Akonadi;
 
 PlainNotesResource::PlainNotesResource( const QString &id )
   : ResourceBase( id ),
-  mSettings( new PlainNotesResourceSettings() )
+  mSettings( new PlainNotesResourceSettings() ),
+  mFsWatcher( new KDirWatch( this ) )
 {
   new PlainNotesResourceSettingsAdaptor( mSettings );
   QDBusConnection::sessionBus().registerObject( QLatin1String( "/Settings" ), mSettings, QDBusConnection::ExportAdaptors );
@@ -36,6 +41,10 @@ PlainNotesResource::PlainNotesResource( const QString &id )
   mSupportedMimeTypes << Collection::mimeType() << mItemMimeType;
 
   initializeDirectory( baseDirectoryPath() );
+
+  connect( mFsWatcher, SIGNAL(dirty(QString)), SLOT(directoryChanged(QString)) );
+
+  synchronizeCollectionTree();
 }
 
 PlainNotesResource::~PlainNotesResource()
@@ -76,7 +85,7 @@ void PlainNotesResource::retrieveItems( const Akonadi::Collection &collection )
   const QFileInfoList entries = directory.entryInfoList();
 
   foreach ( const QFileInfo &entry, entries ) {
-    if ( entry.fileName().startsWith(".") || entry.fileName().endsWith("~") )
+    if ( isIgnored( entry.fileName() ) )
       continue;
 
     Item item;
@@ -95,33 +104,40 @@ bool PlainNotesResource::retrieveItem( const Akonadi::Item &item, const QSet<QBy
 
   const QString filePath = directoryForCollection( item.parentCollection() ) + QDir::separator() + item.remoteId();
 
-  QFileInfo fi( filePath );
   QFile file( filePath );
-  QTextStream stream( &file );
 
   if ( !file.open( QIODevice::ReadOnly ) ) {
     cancelTask( i18n( "Unable to open file '%1'", filePath ) );
     return false;
   }
 
-  KMime::Message * msg = new KMime::Message();
-  msg->subject( true )->fromUnicodeString( item.remoteId(), ENCODING );
-  msg->contentType( true )->setMimeType( "text/plain" );
-  msg->contentType( true )->setCharset( ENCODING );
-  msg->date( true )->setDateTime( KDateTime( fi.created() ) );
-  msg->mainBodyPart()->fromUnicodeString( stream.readAll() );
-  msg->mainBodyPart()->changeEncoding( KMime::Headers::CEquPr );
-  msg->appendHeader( new KMime::Headers::Generic( X_NOTES_LASTMODIFIED_HEADER, msg, KDateTime( fi.lastModified() ).toString( KDateTime::RFCDateDay ).toLatin1(), ENCODING ) );
-  msg->assemble();
+  QString data = QTextStream( &file ).readAll();
 
   file.close();
 
   Item newItem( item );
   newItem.setMimeType( mItemMimeType );
-  newItem.setPayload( KMime::Message::Ptr( msg ) );
+
+  setItemPayload( newItem, filePath, data );
   itemRetrieved( newItem );
 
   return true;
+}
+
+void PlainNotesResource::setItemPayload( Akonadi::Item & item, QString file, QString data ) {
+  QFileInfo fi( file );
+
+  KMime::Message * msg = new KMime::Message();
+  msg->subject( true )->fromUnicodeString( item.remoteId(), ENCODING );
+  msg->contentType( true )->setMimeType( "text/plain" );
+  msg->contentType( true )->setCharset( ENCODING );
+  msg->date( true )->setDateTime( KDateTime( fi.created() ) );
+  msg->mainBodyPart()->fromUnicodeString( data );
+  msg->mainBodyPart()->changeEncoding( KMime::Headers::CEquPr );
+  msg->appendHeader( new KMime::Headers::Generic( X_NOTES_LASTMODIFIED_HEADER, msg, KDateTime( fi.lastModified() ).toString( KDateTime::RFCDateDay ).toLatin1(), ENCODING ) );
+  msg->assemble();
+
+  item.setPayload( KMime::Message::Ptr( msg ) );
 }
 
 void PlainNotesResource::aboutToQuit()
@@ -141,11 +157,119 @@ void PlainNotesResource::configure( WId windowId )
 
     synchronize();
 
+    kWarning() << "configured, watching" << endl;
+
     configurationDialogAccepted();
   } else {
     configurationDialogRejected();
   }
 }
+
+// Fs watching
+
+void PlainNotesResource::directoryChanged( const QString &dir )
+{
+  QFileInfo fi( dir );
+
+  if ( isIgnored( fi.fileName() ) ) {
+    kDebug() << "Ignoring filtered out file/directory" << dir;
+    return;
+  }
+
+  if ( fi.isFile() ) {
+    fileChanged( dir );
+    return;
+  }
+
+  kWarning() << "directory changed" << dir;
+
+  if ( dir == baseDirectoryPath() ) {
+    synchronize();
+    return;
+  }
+
+  const Collection col = collectionForDirectory( dir );
+  if ( col.remoteId().isEmpty() ) {
+    kWarning() << "Unable to find collection for path" << dir;
+    return;
+  }
+
+  CollectionFetchJob *job = new CollectionFetchJob( col, CollectionFetchJob::Base, this );
+  connect( job, SIGNAL(result(KJob*)), SLOT(fsWatchDirFetchResult(KJob*)) );
+}
+
+void PlainNotesResource::fsWatchDirFetchResult(KJob* job)
+{
+  if ( job->error() ) {
+    kDebug() << job->errorString();
+    return;
+  }
+
+  const Collection::List cols = qobject_cast<CollectionFetchJob*>( job )->collections();
+
+  if ( cols.isEmpty() )
+    return;
+
+  synchronizeCollection( cols.first().id() );
+}
+
+void PlainNotesResource::fileChanged( const QString &file )
+{
+  kWarning() << "file changed" << file;
+
+  QFileInfo fi( file );
+
+  QString key = fi.fileName();
+  QString dir = fi.dir().path();
+
+  const Collection col = collectionForDirectory( dir );
+  if ( col.remoteId().isEmpty() ) {
+    kDebug() << "Unable to find collection for path" << dir;
+    return;
+  }
+
+  Item item;
+  item.setRemoteId( key );
+  item.setParentCollection( col );
+
+  ItemFetchJob *job = new ItemFetchJob( item, this );
+  job->fetchScope().setAncestorRetrieval( ItemFetchScope::All );
+  connect( job, SIGNAL(result(KJob*)), SLOT(fsWatchFileFetchResult(KJob*)) );
+}
+
+void PlainNotesResource::fsWatchFileFetchResult( KJob* job )
+{
+  if ( job->error() ) {
+    kDebug() << job->errorString();
+    return;
+  }
+
+  Item::List items = qobject_cast<ItemFetchJob*>( job )->items();
+
+  if ( items.isEmpty() )
+    return;
+
+  Item newItem( items.at( 0 ) );
+
+  const QString filePath = directoryForCollection( newItem.parentCollection() ) + QDir::separator() + newItem.remoteId();
+
+  QFile file( filePath );
+
+  if ( !file.open( QIODevice::ReadOnly ) ) {
+    kWarning() << "Unable to open file" << filePath ;
+    return;
+  }
+
+  QString data = QTextStream( &file ).readAll();
+
+  file.close();
+
+  setItemPayload( newItem, filePath, data );
+
+  new ItemModifyJob( newItem );
+}
+
+// Item handling
 
 void PlainNotesResource::itemAdded( const Akonadi::Item &item, const Akonadi::Collection &collection )
 {
@@ -205,7 +329,11 @@ void PlainNotesResource::saveItem( const Akonadi::Item &item, const Akonadi::Col
     }
 
     if ( saveBody ) {
-      const QString filePath = directoryForCollection( parentCollection ) + QDir::separator() + newItem.remoteId();
+      const QString dirPath = directoryForCollection( parentCollection );
+      const QString filePath = dirPath + QDir::separator() + newItem.remoteId();
+
+      mFsWatcher->removeDir( dirPath );
+
       QFile file( filePath );
       QTextStream stream( &file );
 
@@ -218,6 +346,8 @@ void PlainNotesResource::saveItem( const Akonadi::Item &item, const Akonadi::Col
       stream.flush();
 
       file.close();
+
+      mFsWatcher->addDir( dirPath, KDirWatch::WatchFiles );
     }
   } else {
     kWarning() << "got item without (usable) payload, ignoring it";
@@ -350,7 +480,7 @@ void PlainNotesResource::collectionMoved( const Akonadi::Collection &collection,
 
 QString PlainNotesResource::baseDirectoryPath() const
 {
-  return mSettings->path();
+  return QDir::cleanPath( mSettings->path() );
 }
 
 bool PlainNotesResource::removeDirectory( const QDir &directory )
@@ -416,17 +546,29 @@ QString PlainNotesResource::directoryForCollection( const Collection& collection
   if ( parentDirectory.isNull() ) // invalid, != isEmpty() here!
     return QString();
 
-  QString directory = parentDirectory;
-  if ( !directory.endsWith( '/' ) )
-    directory += QDir::separator() + collection.remoteId();
-  else
-    directory += collection.remoteId();
+  return parentDirectory + QDir::separator() + collection.remoteId();
+}
 
-  return directory;
+Collection PlainNotesResource::collectionForDirectory( const QString & path ) const
+{
+  QFileInfo fi( path );
+  Collection col;
+
+  if ( fi.filePath() == baseDirectoryPath() ) {
+    col.setRemoteId( fi.filePath() );
+    col.setParentCollection( Collection::root() );
+  } else {
+    col.setRemoteId( fi.fileName() );
+    col.setParentCollection( collectionForDirectory( fi.path() ) );
+  }
+
+  return col;
 }
 
 Collection::List PlainNotesResource::createCollectionsForDirectory( const QDir &parentDirectory, const Collection &parentCollection ) const
 {
+  mFsWatcher->addDir( parentDirectory.path(), KDirWatch::WatchFiles );
+
   Collection::List collections;
 
   QDir dir( parentDirectory );
@@ -448,6 +590,11 @@ Collection::List PlainNotesResource::createCollectionsForDirectory( const QDir &
   }
 
   return collections;
+}
+
+bool PlainNotesResource::isIgnored( QString file ) const
+{
+  return file.startsWith(".") || file.startsWith("~") || file.endsWith("~");
 }
 
 AKONADI_RESOURCE_MAIN( PlainNotesResource )
