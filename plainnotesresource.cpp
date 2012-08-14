@@ -319,20 +319,26 @@ void PlainNotesResource::saveItem( const Akonadi::Item &item, const Akonadi::Col
     }
 
     if ( saveHead && !item.remoteId().isEmpty() && item.remoteId() != newItem.remoteId() ) { // We should rename old file it old id was not null
-      const QString sourceFilePath = directoryForCollection( parentCollection ) + QDir::separator() + item.remoteId();
-      const QString destinationFilePath = directoryForCollection( parentCollection ) + QDir::separator() + newItem.remoteId();
+      const QString parentPath = directoryForCollection( parentCollection );
 
-      if ( QFile::exists( sourceFilePath ) && !QFile::rename(sourceFilePath, destinationFilePath) ) { // If file exists but can't be renamed - it's a problem
-        cancelTask( i18n( "Unable to rename file from '%1' to '%2'", sourceFilePath, destinationFilePath ) );
+      const QString sourceFilePath = parentPath + QDir::separator() + item.remoteId();
+      const QString targetFilePath = parentPath + QDir::separator() + newItem.remoteId();
+
+      mFsWatcher->removeDir( parentPath );
+
+      if ( QFile::exists( sourceFilePath ) && !QFile::rename(sourceFilePath, targetFilePath) ) { // If file exists but can't be renamed - it's a problem
+        cancelTask( i18n( "Unable to rename file from '%1' to '%2'", sourceFilePath, targetFilePath ) );
         return;
       }
+
+      mFsWatcher->addDir( parentPath, KDirWatch::WatchFiles );
     }
 
     if ( saveBody ) {
-      const QString dirPath = directoryForCollection( parentCollection );
-      const QString filePath = dirPath + QDir::separator() + newItem.remoteId();
+      const QString parentPath = directoryForCollection( parentCollection );
+      const QString filePath = parentPath + QDir::separator() + newItem.remoteId();
 
-      mFsWatcher->removeDir( dirPath );
+      mFsWatcher->removeDir( parentPath );
 
       QFile file( filePath );
       QTextStream stream( &file );
@@ -347,7 +353,7 @@ void PlainNotesResource::saveItem( const Akonadi::Item &item, const Akonadi::Col
 
       file.close();
 
-      mFsWatcher->addDir( dirPath, KDirWatch::WatchFiles );
+      mFsWatcher->addDir( parentPath, KDirWatch::WatchFiles );
     }
   } else {
     kWarning() << "got item without (usable) payload, ignoring it";
@@ -371,12 +377,17 @@ void PlainNotesResource::itemRemoved( const Akonadi::Item &item )
     return;
   }
 
-  const QString fileName = directoryForCollection( item.parentCollection() ) + QDir::separator() + item.remoteId();
+  const QString parentPath  = directoryForCollection( item.parentCollection() );
+  const QString filePath = directoryForCollection( item.parentCollection() ) + QDir::separator() + item.remoteId();
 
-  if ( !QFile::remove( fileName ) ) {
-    cancelTask( i18n( "Unable to remove file '%1'", fileName ) );
+  mFsWatcher->removeDir( parentPath );
+
+  if ( !QFile::remove( filePath ) ) {
+    cancelTask( i18n( "Unable to remove file '%1'", filePath ) );
     return;
   }
+
+  mFsWatcher->addDir( parentPath, KDirWatch::WatchFiles );
 
   changeProcessed();
 }
@@ -384,13 +395,22 @@ void PlainNotesResource::itemRemoved( const Akonadi::Item &item )
 void PlainNotesResource::itemMoved( const Akonadi::Item &item, const Akonadi::Collection &collectionSource,
                                   const Akonadi::Collection &collectionDestination )
 {
-  const QString sourceFileName = directoryForCollection( collectionSource ) + QDir::separator() + item.remoteId();
-  const QString targetFileName = directoryForCollection( collectionDestination ) + QDir::separator() + item.remoteId();
+  const QString sourceParentPath = directoryForCollection( collectionSource );
+  const QString sourceFilePath = sourceParentPath + QDir::separator() + item.remoteId();
 
-  if ( QFile::rename( sourceFileName, targetFileName ) )
+  const QString targetParentPath = directoryForCollection( collectionDestination );
+  const QString targetFilePath = targetParentPath + QDir::separator() + item.remoteId();
+
+  mFsWatcher->removeDir( sourceParentPath );
+  mFsWatcher->removeDir( targetParentPath );
+
+  if ( QFile::rename( sourceFilePath, targetFilePath ) )
     changeProcessed();
   else
-    cancelTask( i18n( "Unable to move file '%1' to '%2', '%2' already exists.", sourceFileName, targetFileName ) );
+    cancelTask( i18n( "Unable to move file '%1' to '%2', '%2' already exists.", sourceFilePath, targetFilePath ) );
+
+  mFsWatcher->addDir( sourceParentPath, KDirWatch::WatchFiles );
+  mFsWatcher->addDir( targetParentPath, KDirWatch::WatchFiles );
 }
 
 // Collection handling
@@ -402,14 +422,20 @@ void PlainNotesResource::collectionAdded( const Akonadi::Collection &collection,
     return;
   }
 
-  const QString dirName = directoryForCollection( parent ) + QDir::separator() + collection.name();
+  const QString parentPath = directoryForCollection( parent );
+  const QString directoryPath = parentPath + QDir::separator() + collection.name();
 
-  if ( !QDir::root().mkpath( dirName ) ) {
-    cancelTask( i18n( "Unable to create folder '%1'.", dirName ) );
+  mFsWatcher->removeDir( parentPath );
+
+  if ( !QDir::root().mkpath( directoryPath ) ) {
+    cancelTask( i18n( "Unable to create folder '%1'.", directoryPath ) );
     return;
   }
 
-  initializeDirectory( dirName );
+  initializeDirectory( directoryPath );
+
+  mFsWatcher->addDir( parentPath, KDirWatch::WatchFiles );
+  mFsWatcher->addDir( directoryPath, KDirWatch::WatchFiles ); // Watch new directory
 
   Collection newCollection( collection );
   newCollection.setRemoteId( collection.name() );
@@ -438,13 +464,21 @@ void PlainNotesResource::collectionChanged( const Akonadi::Collection &collectio
   Collection newCollection( collection );
   newCollection.setRemoteId( collection.name() );
 
-  const QString oldName = directoryForCollection( collection );
-  const QString newName = directoryForCollection( newCollection );
+  const QString parentPath = directoryForCollection( collection.parentCollection() );
 
-  if ( !QFile::rename( oldName, newName ) ) {
-    cancelTask( i18n( "Unable to rename folder '%1' from '%2' to '%3'.", collection.name(), oldName, newName ) );
+  const QString sourcePath = parentPath + QDir::separator() + collection.remoteId();
+  const QString targetPath = parentPath + QDir::separator() + newCollection.remoteId();
+
+  mFsWatcher->removeDir( sourcePath ); // Don't watch directory with old name
+  mFsWatcher->removeDir( parentPath );
+
+  if ( !QFile::rename( sourcePath, targetPath ) ) {
+    cancelTask( i18n( "Unable to rename folder '%1' from '%2' to '%3'.", collection.name(), sourcePath, targetPath ) );
     return;
   }
+
+  mFsWatcher->addDir( parentPath );
+  mFsWatcher->addDir( targetPath ); // Watch directory with new name
 
   changeCommitted( newCollection );
 }
@@ -456,10 +490,18 @@ void PlainNotesResource::collectionRemoved( const Akonadi::Collection &collectio
     return;
   }
 
-  if ( !removeDirectory( directoryForCollection( collection ) ) ) {
+  const QString parentPath = directoryForCollection( collection.parentCollection() );
+  const QString directoryPath = parentPath + QDir::separator() + collection.remoteId();
+
+  mFsWatcher->removeDir( directoryPath ); // Don't watch removed directory
+  mFsWatcher->removeDir( parentPath );
+
+  if ( !removeDirectory( directoryPath ) ) {
     cancelTask( i18n( "Unable to delete folder '%1'.", collection.name() ) );
     return;
   }
+
+  mFsWatcher->addDir( parentPath, KDirWatch::WatchFiles );
 
   changeProcessed();
 }
@@ -467,13 +509,24 @@ void PlainNotesResource::collectionRemoved( const Akonadi::Collection &collectio
 void PlainNotesResource::collectionMoved( const Akonadi::Collection &collection, const Akonadi::Collection &collectionSource,
                                         const Akonadi::Collection &collectionDestination )
 {
-  const QString sourceDirectoryName = directoryForCollection( collectionSource ) + QDir::separator() + collection.remoteId();
-  const QString targetDirectoryName = directoryForCollection( collectionDestination ) + QDir::separator() + collection.remoteId();
+  const QString sourceParentPath = directoryForCollection( collectionSource );
+  const QString targetParentPath = directoryForCollection( collectionDestination );
 
-  if ( QFile::rename( sourceDirectoryName, targetDirectoryName ) )
+  const QString sourcePath = sourceParentPath + QDir::separator() + collection.remoteId();
+  const QString targetPath = targetParentPath + QDir::separator() + collection.remoteId();
+
+  mFsWatcher->removeDir( sourcePath ); // Don't watch moved directory
+  mFsWatcher->removeDir( sourceParentPath );
+  mFsWatcher->removeDir( targetParentPath );
+
+  if ( QFile::rename( sourcePath, targetPath ) )
     changeProcessed();
   else
-    cancelTask( i18n( "Unable to move directory '%1' to '%2', '%2' already exists.", sourceDirectoryName, targetDirectoryName ) );
+    cancelTask( i18n( "Unable to move directory '%1' to '%2', '%2' already exists.", sourcePath, targetPath ) );
+
+  mFsWatcher->addDir( targetPath, KDirWatch::WatchFiles ); // Watch target directory
+  mFsWatcher->addDir( sourceParentPath, KDirWatch::WatchFiles );
+  mFsWatcher->addDir( targetParentPath, KDirWatch::WatchFiles );
 }
 
 // Internal helpers
